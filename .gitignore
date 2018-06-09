@@ -1,3 +1,6 @@
+# Data files
+StormData.csv.bz2
+
 # History files
 .Rhistory
 .Rapp.history

@@ -1,0 +1,189 @@
+---
+title: "Extreme Weather in the US: What Kinds of Weather Event are Most Harmful?"
+author: "Connor Claypool"
+date: "9 June 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+# Synopsis
+
+This analysis makes use of data sourced from the National Oceanic and Atmospheric Administration (NOAA) Storm Database, to determine which types of weather, on average, cause the greatest harm in terms of casualty rates and economic damage. This dataset contains information on individual weather events, including estimates of fatalities and injuries caused and damage to property and crops. Firstly, the dataset is processed to include only this information. The descriptions of the weather events are then matched to a smaller number of general weather event types, and the data is grouped based on these general categories. Next, the mean of each of the four variables of interest (injuries, fatalities, property damage and crop damage) is calculated for each type of weather event. These results are plotted to give a visual representation of which types of event are most hazardous to health and the economy.
+
+# Data Processing
+
+Firstly, the csv-formatted data is downloaded if necessary and loaded into R as a data frame.
+
+```{r}
+data_file <- "StormData.csv.bz2"
+
+if(!file.exists(data_file)) {
+    url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+    download.file(url = url, destfile = data_file, method = "curl")
+}
+
+data <- read.csv(bzfile(data_file), na.strings = "?", stringsAsFactors = F)
+```
+
+After the data is loaded, the initial steps of data processing are performed. First, the relevant variables are selected. These are:  
+
+* The event type
+* The number of fatalities
+* The number of injuries
+* Property damage
+* Property damage units (one of 'k', 'm' or 'b', indicating thousands, millions or billions of dollars respectively)
+* Crop damage
+* Crop damage units
+
+Secondly, the textual variables - the event type and unit indicators - are converted to lowercase and trimmed of leading and trailing whitespace. Thirdly, the records are filtered. Only records whose damage units are unambiguous, that is, 'k', 'm', or 'b', or blank when there is no damage, are kept. Additionally, event types which are a summary of a time period and not a specific event are removed. Next, the damage amounts are converted to dollars based on their units, and the unit columns are removed. Finally, the columns are given tidier, more descriptive names.
+
+```{r message=FALSE}
+library(dplyr)
+
+exps <- list(k = 1e3, m = 1e6, b = 1e9)
+
+conv_exps <- function(exp) {
+    if(exp %in% names(exps)) {
+        return(exps[[exp]])
+    }
+    return(0)
+}
+
+data <- data %>% 
+    select(EVTYPE, FATALITIES:CROPDMGEXP) %>%
+    mutate(EVTYPE = trimws(tolower(EVTYPE)),
+           PROPDMGEXP = trimws(tolower(PROPDMGEXP)),
+           CROPDMGEXP = trimws(tolower(CROPDMGEXP))) %>%
+    filter(PROPDMGEXP %in% c("", names(exps)),
+           CROPDMGEXP %in% c("", names(exps)),
+           !(PROPDMG > 0 & PROPDMGEXP == ""),
+           !(CROPDMG > 0 & CROPDMGEXP == ""),
+           !grepl("summary", EVTYPE)) %>%
+    mutate(PROPDMGEXP = sapply(PROPDMGEXP, conv_exps, USE.NAMES = F),
+           CROPDMGEXP = sapply(CROPDMGEXP, conv_exps, USE.NAMES = F),
+           PROPDMG = PROPDMG * PROPDMGEXP,
+           CROPDMG = CROPDMG * CROPDMGEXP) %>%
+    select(-c(PROPDMGEXP, CROPDMGEXP))
+
+colnames(data) <- c("event.type", "fatalities", "injuries", 
+                    "property.damage", "crop.damage")
+```
+
+At this point, the data has `r length(unique(data$event.type))` unique event descriptions, many of which refer to the same kind of event. To make the analysis clearer, these will be combined into a smaller number of weather types. A data frame is created with 22 more general event types and the corresponding regular expressions by which the original event descriptions will be matched.
+
+```{r}
+name <- c("hurricane/typhoon", "tornado", "thunderstorm", "tropical storm",
+          "wind", "storm surge", "low tide", "high tide","flood", "snow/sleet",
+          "rain", "hail", "cold/wintry weather", "ice", "drought", "heat",
+          "wildfires", "dust storm/devil", "erosion", "volcanic eruption/ash",
+          "mudslide", "fog")
+regexp <- c("hurricane|typhoon", "tornado", "tstm|thunderstorm|lightning", 
+            "tropical storm", "wind", "surge", "low tide", 
+            "high tide", "flood", "snow|blizzard|sleet", "rain|wet", "hail", 
+            "cold|freez|(wint(e)?r(y)?.*(weather|mix))", "ice", "drought|dry", 
+            "heat|warmth", "fire", "dust", "erosion", "volcanic", "mud", "fog")
+weather_types <- data.frame(name, regexp, stringsAsFactors = FALSE)
+```
+
+For each general type, the subset of the dataset which matches it is extracted with the event type variable changed to the corresponding general name. These subsets are then recombined, and the event type is converted into a factor. Note that before this transformation, the data has `r formatC(nrow(data), format = 'd', big.mark = ',')` rows.
+
+```{r}
+data_list <- vector(mode = "list", length = nrow(weather_types))
+
+for(i in 1:nrow(weather_types)) {
+    data_list[[i]] <- data %>% 
+        filter(grepl(weather_types[i,"regexp"], event.type)) %>%
+        mutate(event.type = weather_types[i,"name"])
+}
+
+data <- do.call("rbind", data_list)
+data$event.type <- as.factor(data$event.type)
+rm(data_list)
+```
+
+After this transformation the data has `r formatC(nrow(data), format = 'd', big.mark = ',')` rows. Some of the records have been duplicated as they match more than one general event type. This is acceptable as the analysis is concerned only with the average characteristics of each of these general event types.  
+
+# Analysis
+
+The analysis of this data is straightforward. For both the health outcome variables (fatalities and injuries) and the economic outcome variables (property and crop damage), the data is grouped by event type and the means of each variable by event type are calculated.
+
+```{r}
+health_data <- data %>% 
+    select(event.type, fatalities, injuries) %>%
+    group_by(event.type) %>%
+    summarize_all(mean)
+
+economic_data <- data %>%
+    select(event.type, property.damage, crop.damage) %>%
+    group_by(event.type) %>%
+    summarise_all(mean)
+```
+
+The next step is to arrange the data in a useful order. The health data will be arranged in descending order by fatalities and then injuries, while the economic data will be arranged in descending order by the sum total of property and crop damage. Additionally, the factor levels will be reordered similarly but in ascending order (this is required to ensure the results are later plotted in the desired order).
+
+```{r}
+health_data <- health_data %>% 
+    arrange(desc(fatalities), desc(injuries))
+health_data$event.type <- factor(health_data$event.type, 
+                                 levels = rev(health_data$event.type))
+
+economic_data <- economic_data %>%
+    arrange(desc(property.damage + crop.damage))
+economic_data$event.type <- factor(economic_data$event.type,
+                                   levels = rev(economic_data$event.type))
+```
+
+The structure of the final ordered data can be seen below.
+
+```{r}
+print(health_data)
+print(economic_data)
+```
+
+# Results
+
+A bar plot of the mean fatalities and injuries by type of weather event shows which types of weather event are most hazardous to life. The plot is ordered by fatalities, with any ties broken by injury rates.
+
+```{r}
+library(reshape2)
+library(ggplot2)
+
+ggplot(melt(health_data, id.vars = "event.type"), 
+       aes(event.type, value, fill = variable)) +
+    geom_col(position = "dodge") +
+    coord_flip() +
+    theme(legend.title = element_blank(),
+                         legend.position = "bottom") +
+    ggtitle("Casualties from US Weather Events") +
+    xlab("") +
+    ylab("Mean Casualties") +
+    scale_fill_manual(labels = c("Fatalities", "Injuries"),
+                      values = c("red3", "orange1"))
+```
+
+It is clear from this plot that extreme heat and hurricanes are by far the most hazardous in terms of casualties. Mudslides, tropical storms and tornadoes are also among the most dangerous events.
+
+A similar bar plot shows which events cause the most economic damage. The plot is ordered by the sum total of mean property and crop damage.
+
+```{r}
+
+ggplot(melt(economic_data, id.vars = "event.type"), 
+       aes(event.type, value / 1e6, fill = variable)) +
+    geom_col(position = "dodge") +
+    coord_flip() +
+    theme(legend.title = element_blank(),
+                         legend.position = "bottom") +
+    ggtitle("Damage from US Weather Events") +
+    xlab("") +
+    ylab("Mean Damage (Millions of Dollars)") +
+    scale_fill_manual(labels = c("Property Damage", "Crop Damage"), 
+                      values = c("steelblue", "wheat3"))
+
+```
+
+This plot shows that hurricanes, storm surges and tropical storms dwarf other weather events in terms of the total damage they cause. However, it can be seen that hurricanes, drought and ice cause the most significant damage to crops.
+
+It should be noted that the purpose of this analysis has been to show which types of weather events are most harmful individually, in terms of their mean per-event casualty rates and economic damage. A useful extension to this analysis would be an investigation into which types of event are most harmful overall; that is, in terms of the proportion of total casualties or damage due to each kind of event. However, that is beyond the scope of this analysis.
